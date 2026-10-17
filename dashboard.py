@@ -256,13 +256,33 @@ def get_runs():
             status = run.get("status")
             started = _parse_iso(run.get("run_started_at") or run.get("created_at") or "")
             if status in ("in_progress", "queued"):
-                elapsed = 0
-                if started:
-                    elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
-                in_progress.append({"name": run.get("name", "?"),
-                                    "repo": repo.split("/")[-1],
-                                    "status": status, "elapsed": elapsed,
-                                    "branch": run.get("head_branch", "")})
+                now_dt = datetime.now(timezone.utc)
+                short = repo.split("/")[-1]
+                run_id = run.get("id")
+                # Expand into jobs so we can show WHERE each one runs: a run can
+                # be "in progress" while its remaining jobs sit on GitHub-hosted
+                # runners, which never touch your self-hosted slots.
+                jobs_data = gh_json(
+                    f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=50") if run_id else None
+                active = [j for j in (jobs_data or {}).get("jobs", [])
+                          if j.get("status") in ("in_progress", "queued")]
+                if active:
+                    for j in active:
+                        st = _parse_iso(j.get("started_at") or "")
+                        el = int((now_dt - st).total_seconds()) if st else 0
+                        labels = j.get("labels", []) or []
+                        home = ("self-hosted" in labels) or (j.get("runner_group_name") == "home")
+                        in_progress.append({"name": run.get("name", "?"), "job": j.get("name", ""),
+                                            "repo": short, "status": j.get("status", status),
+                                            "elapsed": el, "branch": run.get("head_branch", ""),
+                                            "home": home,
+                                            "runner": j.get("runner_name") or ("hosted" if not home else "")})
+                else:
+                    elapsed = int((now_dt - started).total_seconds()) if started else 0
+                    in_progress.append({"name": run.get("name", "?"), "job": "",
+                                        "repo": short, "status": status, "elapsed": elapsed,
+                                        "branch": run.get("head_branch", ""),
+                                        "home": None, "runner": ""})
             created = _parse_iso(run.get("created_at") or "")
             if created:
                 per_hour[created.hour] += 1
@@ -356,7 +376,8 @@ PAGE = r"""<!doctype html>
       <canvas id="spark" width="600" height="46"></canvas></div>
 
     <div class="panel"><h2>Running now</h2>
-      <div id="running"><div class="sub">idle — nothing building</div></div></div>
+      <div id="running"><div class="sub">idle — nothing building</div></div>
+      <div class="foot"><span style="color:var(--ok)">●</span> home runner &nbsp; ☁ GitHub-hosted (doesn't use your slots)</div></div>
 
     <div class="panel"><h2>CPU</h2>
       <div class="row"><span>overall</span><span class="big" id="cpupct">–</span></div>
@@ -417,9 +438,16 @@ async function tick(){
   drawSpark(d.runs.per_hour);
   // running
   const ip=d.runs.in_progress;
-  $('running').innerHTML=ip.length?ip.map(j=>
-    `<div class="job pulse"><b>${j.repo}</b> · ${j.name} <span class="t">${j.branch}</span>
-     <div class="t">${j.status} · ${dur(j.elapsed)}</div></div>`).join('')
+  $('running').innerHTML=ip.length?ip.map(j=>{
+    const loc = j.home===true
+      ? `<span style="color:var(--ok)">● ${j.runner||'home'}</span>`
+      : j.home===false
+        ? `<span style="color:var(--dim)">☁ ${j.runner||'hosted'}</span>` : '';
+    const jn = j.job ? (' · '+j.job) : '';
+    const bc = j.home===true ? 'var(--ok)' : j.home===false ? 'var(--dim)' : 'var(--busy)';
+    return `<div class="job pulse" style="border-left-color:${bc}">
+       <b>${j.repo}</b> · ${j.name}${jn} <span class="t">${j.branch}</span>
+       <div class="t">${j.status} · ${dur(j.elapsed)}${loc?(' · '+loc):''}</div></div>`;}).join('')
     :'<div class="sub">idle — nothing building</div>';
   // cpu
   $('cpupct').textContent=d.cpu.overall.toFixed(0)+'%';
