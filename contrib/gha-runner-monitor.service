@@ -1,0 +1,16 @@
+[Unit]
+Description=GitHub Actions runner monitor
+After=network-online.target
+
+[Service]
+# Adjust the path to wherever you cloned the repo.
+ExecStart=/usr/bin/python3 %h/gha-runner-monitor/dashboard.py
+Restart=on-failure
+RestartSec=3
+Environment=PORT=8787
+# Set these to light up the runner/job panels (optional):
+#Environment=ORG=my-org
+#Environment=REPOS=my-org/repo-a,my-org/repo-b
+
+[Install]
+WantedBy=default.target
